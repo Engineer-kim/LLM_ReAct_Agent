@@ -1,12 +1,15 @@
 from typing import Union, List
 
 from dotenv import load_dotenv
+from langchain.agents.format_scratchpad import format_log_to_str
 from langchain.agents.output_parsers import ReActSingleInputOutputParser
 from langchain_openai import ChatOpenAI
 from langchain.prompts import PromptTemplate
 from langchain.schema import AgentAction, AgentFinish
 from langchain.tools import Tool, tool
 from langchain.tools.render import render_text_description
+
+from callbacks import AgentCallbackHandler
 
 load_dotenv()
 
@@ -69,8 +72,15 @@ if __name__ == "__main__":
         tool_names=", ".join([t.name for t in tools]),
     )
 
-    llm = ChatOpenAI(temperature=0, stop=["\nObservation", "Observation"])
-    agent = {"input": lambda x:x["input"]} | prompt | llm | ReActSingleInputOutputParser()
+    llm = ChatOpenAI(temperature=0, stop=["\nObservation"] , callbacks=[AgentCallbackHandler()])
+
+    intermediate_steps = []
+    agent = ({
+                "input": lambda x:x["input"],
+                # agent_scratchpad ==>  LLM이 문제 해결 과정을 진행하면서  뭘 했고, 뭘 알아냈는지 적어두는 메모장
+                "agent_scratchpad": lambda x: format_log_to_str(x["agent_scratchpad"]),
+            }
+             | prompt | llm | ReActSingleInputOutputParser())
     #ReActSingleInputOutputParser ==> LLM이 생성한 행동을 파싱하는 도구인데 쉽게 말하면 더 정확하고 일관된 답변이 보장됨
     
     
@@ -80,16 +90,30 @@ if __name__ == "__main__":
     #Union [AgentAction, AgentFinish] ==> 두가지 타입을 모두 받을 수 있는 타입
     #AgentAction ==> 에이전트가 어떤 행동을 하기 위한 중간 단계 정보 (복잡한 건 도구를 순서대로 써서 해결 (AgentAction → Action → Finish))
     #AgentFinish ==> 에이전트가 작업을 완료한 최종 결과 단계(간단한 건 직접 답)
-    agent_step: Union[AgentAction, AgentFinish] = agent.invoke({"input" : "what is the length of the text 'DOG'?  | in characters"})
-    print(agent_step)
+    # agent_step: Union[AgentAction, AgentFinish] = agent.invoke({"input" : "what is the length of the text 'DOG'?  | in characters"})
+    # print(agent_step)
 
-    if isinstance(agent_step, AgentFinish): # agent_step이 AgentFinish 타입인지 확인 == 에이전트가 "작업 끝났어!"라고 한 경우
-        tool_name = agent_step.tool
-        tool_to_use = find_tool_by_name(tools, tool_name)
-        tool_input = agent_step.tool_input
 
-        observation = tool_to_use.func(str(tool_input))  # .func => 객체.메서드 호출(자바로 치면 isquals, Getter ,Setter등을 호출함)
-        print(f"{observation=}")  #리터럴 출력
 
+    agent_step = ""
+    while not isinstance(agent_step, AgentFinish):
+        agent_step: Union[AgentAction, AgentFinish] = agent.invoke(
+            {
+                "input": "What is the length of the word: DOG",
+                "agent_scratchpad": intermediate_steps,
+            }
+        )
+        if isinstance(agent_step, AgentFinish):  # agent_step이 AgentFinish 타입인지 확인 == 에이전트가 "작업 끝났어!"라고 한 경우
+            tool_name = agent_step.tool
+            tool_to_use = find_tool_by_name(tools, tool_name)
+            tool_input = agent_step.tool_input
+
+            observation = tool_to_use.func(str(tool_input))  # .func => 객체.메서드 호출(자바로 치면 isquals, Getter ,Setter등을 호출함)
+            print(f"{observation=}")  # 리터럴 출력
+            intermediate_steps.append((agent_step, str(observation)))
+
+    if isinstance(agent_step, AgentFinish):
+        print("### AgentFinish ###")
+        print(agent_step.return_values)
 
     #print(res) # 3이 나옴
